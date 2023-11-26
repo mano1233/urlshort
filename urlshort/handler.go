@@ -32,6 +32,7 @@ func (r *WrongTypeError) Error() string {
 func MapHandler(pathsToUrls map[string]string, fallback http.Handler) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Ran map handler")
 		// Check if the requested path exists in the map
 		if dest, ok := pathsToUrls[r.URL.Path]; ok {
 			// Redirect to the corresponding URL
@@ -42,6 +43,11 @@ func MapHandler(pathsToUrls map[string]string, fallback http.Handler) http.Handl
 		// If the path is not in the map, call the fallback handler
 		fallback.ServeHTTP(w, r)
 	}
+}
+
+type pathUrl struct {
+	Path string `yaml:"path,omitempty" json:"path,omitempty" db:"path,omitempty"`
+	URL  string `yaml:"url,omitempty" json:"url,omitempty" db:"url,omitempty"`
 }
 
 // YAMLHandler will parse the provided YAML and then return
@@ -86,34 +92,29 @@ func JSONHandler(jsonBytes []byte, fallback http.Handler) (http.HandlerFunc, err
 	return MapHandler(pathMap, fallback), nil
 }
 
-func SQLiteHandler(db *sqlx.DB, fallback http.Handler) http.HandlerFunc {
+func SQLiteHandler(fileName string, fallback http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var url string
-		var path string
-		row := db.QueryRow("select * FROM urls WHERE path = ?", r.URL.Path)
-		err := row.Scan(&path, &url)
+		var res pathUrl
+		db, err := sqlx.Open("sqlite3", fileName)
 		if err != nil {
+			fallback.ServeHTTP(w, r)
+		}
+		defer db.Close()
+		err = db.Get(&res, "SELECT * FROM urls WHERE path = $1", r.URL.Path)
+		fmt.Printf("result object %#v\n", res)
+		if err != nil {
+			fmt.Printf("%#v", err)
 			fallback.ServeHTTP(w, r)
 
 		}
-		http.Redirect(w, r, path, http.StatusFound)
+		http.Redirect(w, r, res.URL, http.StatusFound)
 	}
 }
 
 func FileHandler(fileName, fileType string, fallback http.Handler) (http.HandlerFunc, error) {
 	pathMap := make(map[string]string)
 	var byteValue []byte
-	var db *sqlx.DB
-	var err error
-	if fileType == "sqlite" {
-		db, err = sqlx.Open("sqlite3", "test.db")
-
-		if err != nil {
-			return nil, err
-		}
-
-		defer db.Close()
-	} else {
+	if fileType != "sqlite" {
 		file, err := os.Open(fileName)
 		if err != nil {
 			return nil, err
@@ -131,24 +132,13 @@ func FileHandler(fileName, fileType string, fallback http.Handler) (http.Handler
 	case "yaml":
 		return YAMLHandler(byteValue, fallback)
 	case "sqlite":
-		// rows, _ := db.Queryx("SELECT * FROM urls WHERE path = /spotify")
-		// res := pathUrl{}
-		// for rows.Next() {
-		// 	_ = rows.StructScan(&res)
-		// 	fmt.Printf("%#v\n", res)
-		// }
-		return SQLiteHandler(db, fallback), nil
+		return SQLiteHandler(fileName, fallback), nil
 	default:
 		return MapHandler(pathMap, fallback), &WrongTypeError{
 			Type: fileType,
 			Err:  errors.New("unavailable"),
 		}
 	}
-}
-
-type pathUrl struct {
-	Path string `yaml:"path,omitempty" json:"path,omitempty" db:"path,omitempty"`
-	URL  string `yaml:"url,omitempty" json:"url,omitempty" db:"url,omitempty"`
 }
 
 func buildMap(urls []pathUrl) map[string]string {
